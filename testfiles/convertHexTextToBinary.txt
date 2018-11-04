@@ -1,0 +1,1 @@
+xxd -r -p 3.311R1_LGC.dld 3.311R1_LGC.bin
