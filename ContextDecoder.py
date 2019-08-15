@@ -247,6 +247,21 @@ class ContextDecoder:
         contextTable_.insert(len(contextTable_) - 1, [contextSymbol_, [[-1, 0]]])
         contextTableCounts_.insert(len(contextTable_) -1, 1)
 
+    def findSymbolIndex(self, symbol_, symbolTable_):
+        """
+        Find the index of the symbol in the current table. Return -1 if not found
+
+        :param symbol_: The symbol for which we are finding the index for
+        :param: symbolTable_: The symbol table we are searching
+        :return: Return the index if the symbol is found otherwise -1
+        """
+
+        for i in range(0, len(symbolTable_)):
+            if(symbolTable_[i][0] == symbol_):
+                return i
+
+        return -1
+
     def zeroOrderDecode(self):
         finished = False
 
@@ -315,30 +330,34 @@ class ContextDecoder:
                     raise Exception("Not in first order")
 
                 symbolTable = self.mFirstOrderSymbols[symbolTableIndex][1]
-                [currentSymbol, finished, self.mFirstOrderSymbolCounts[symbolTableIndex]] = self.decodeFromTable(symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex], 1)
+
+                if(self.mFirstOrderSymbolCounts[symbolTableIndex] == 1):
+                    currentSymbol = -1
+                    finished = False
+                else:
+                    [currentSymbol, finished, self.mFirstOrderSymbolCounts[symbolTableIndex]] = self.decodeFromTable(symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex], 1)
 
                 #If the symbol is not in the table send escape symbol and use lower order to encode symbol
                 if(currentSymbol == -1):
-                    self.zeroOrderEncode(dataToEncode_[i])
+                    [currentSymbol, finished] = self.zeroOrderDecode()
 
-                    symbolTable.insert(len(symbolTable) - 1, [dataToEncode_[i], 0])
+                    symbolTable.insert(len(symbolTable) - 1, [currentSymbol, 0])
                     self.mFirstOrderSymbolCounts[symbolTableIndex] = \
                         self._increment_count(len(symbolTable) - 2, symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex])
                     self.mFirstOrderSymbolCounts[symbolTableIndex] = \
                         self._increment_count(len(symbolTable) - 1, symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex])
                 else:
+                    symbolIndex = self.findSymbolIndex(currentSymbol, symbolTable)
                     [self.mLowerTag, self.mUpperTag] = self._update_range_tags(symbolIndex, symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex], self.mLowerTag, self.mUpperTag)
                     self.mFirstOrderSymbolCounts[symbolTableIndex] = self._increment_count(symbolIndex, symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex])
                     [self.mLowerTag, self.mUpperTag] = self._rescale(self.mLowerTag, self.mUpperTag)
 
-                currentContext = dataToEncode_[i]
+                currentContext = currentSymbol
                 symbolTableIndex = self.findSymbolIndex(currentContext, self.mFirstOrderSymbols)
 
                 #If not in symbol table add it
                 if(symbolTableIndex == -1):
                     self.addSymbolTable(self.mFirstOrderSymbols, self.mFirstOrderSymbolCounts, currentContext)
-
-
 
             if(not finished):
                 self.mDecodedData[self.mDecodedDataLen] = currentSymbol
