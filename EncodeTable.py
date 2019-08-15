@@ -1,15 +1,17 @@
 __author__ = 'Marko Milutinovic'
 
 """
-This class will implement an Arithmetic Coding encoder
+This class will implement an Arithmetic Coding encoder table with a dynamic vocabulary size
 """
 
 import array
 import utils
 import math
 
-class AREncoder:
-    def __init__(self, wordSize_, vocabularySize_):
+class EncodeTable:
+    ESCAPE_SYMBOL = -1
+
+    def __init__(self, wordSize_):
         """
         Initialize the object. The word size must be greater than 2 and less than or equal to 16
 
@@ -18,7 +20,6 @@ class AREncoder:
         :return:
         """
         self.mMaxEncodeBytes = utils.calculateMaxBytes(wordSize_)                                 # The max number of bytes we can compress before the statistics need to be re-normalized
-        self.mVocabularySize = vocabularySize_
 
         if(self.mMaxEncodeBytes == 0):
             raise Exception("Invalid word size specified")
@@ -31,9 +32,6 @@ class AREncoder:
         # Create bit mask for the word size
         for i in range(0, self.mWordSize):
             self.mWordBitMask = (self.mWordBitMask << 1) | 0x0001
-
-        # We are initializing with an assumption of a value of 1 for the count of each symbol.
-        self.mSymbolCount = array.array('i', [1]*self.mVocabularySize)
 
         # Reset all the member variables on which encoding is based on
         self.reset()
@@ -48,13 +46,12 @@ class AREncoder:
         self.mEncodedData = None
         self.mMaxEncodedDataLen = 0                                                # The max number of bytes that can be stored in mEncodedData
         self.mEncodedDataCount = int(0)                                            # The number of bytes compressed data is taking up
-        self.mTotalSymbolCount = self.mVocabularySize                              # The total number of symbols encountered
+        self.mTotalSymbolCount = 1                                                 # The total number of symbols encountered
         self.mE3ScaleCount = 0                                                     # Holds the number of E3 mappings currently outstanding
         self.mCurrentBitCount = 0                                                  # The current number of bits loaded onto the mCurrentByte variable
 
-        # We are initializing with an assumption of a value of 1 for the count of each symbol
-        for i in range(0,self.mVocabularySize):
-            self.mSymbolCount[i] = 1
+        self.mSymbolCount = []
+        self.mSymbolCount.append([self.ESCAPE_SYMBOL, 1])
 
         # Initialize the range tags to min and max
         self.mLowerTag = 0
@@ -95,7 +92,7 @@ class AREncoder:
         :return: None
         """
 
-        self.mSymbolCount[indexToIncrement_] += 1
+        self.mSymbolCount[indexToIncrement_][1] += 1
         self.mTotalSymbolCount += 1
 
         # If we have reached the max number of bytes, we need to normalize the stats to allow us to continue
@@ -148,7 +145,7 @@ class AREncoder:
 
         return [lowerTag_, upperTag_]
 
-    def _update_range_tags(self, currentSymbol_, lowerTag_, upperTag_):
+    def _update_range_tags(self, currentSymbolIndex_, lowerTag_, upperTag_):
         """
         Update the upper and lower tags according to stats for the incoming symbol
 
@@ -162,10 +159,10 @@ class AREncoder:
         rangeDiff = upperTag_ - lowerTag_
         cumulativeCountSymbol = 0
 
-        for i in range(0, currentSymbol_ + 1):
-            cumulativeCountSymbol += self.mSymbolCount[i]
+        for i in range(0, currentSymbolIndex_ + 1):
+            cumulativeCountSymbol += self.mSymbolCount[i][1]
 
-        cumulativeCountPrevSymbol = cumulativeCountSymbol - self.mSymbolCount[currentSymbol_]
+        cumulativeCountPrevSymbol = cumulativeCountSymbol - self.mSymbolCount[currentSymbolIndex_][1]
 
         upperTag_ = int((lowerTag_ + math.floor(((rangeDiff + 1)*cumulativeCountSymbol))/self.mTotalSymbolCount - 1))
         lowerTag_ = int((lowerTag_ + math.floor(((rangeDiff + 1)*cumulativeCountPrevSymbol))/self.mTotalSymbolCount))
@@ -183,74 +180,62 @@ class AREncoder:
         self.mTotalSymbolCount = 0
 
         # Go through all the entries in the cumulative count array
-        for i in range(0, self.mVocabularySize):
+        for i in range(0, len(self.mSymbolCount)):
 
-            value = int(self.mSymbolCount[i]/2)
+            value = int(self.mSymbolCount[i][1]/2)
 
             # Ensure the count is at least 1
             if(value == 0):
                 value = 1
 
-            self.mSymbolCount[i] = value
+            self.mSymbolCount[i][1] = value
             self.mTotalSymbolCount += value
 
-        def encode(self, dataToEncode_, dataLen_, encodedData_, maxEncodedDataLen_, lastDataBlock=True):
+    def findSymbolIndex(self, symbol_):
         """
-        Encode the data passed in. The encoded data will be stored in encodedData_ and if there is not enough room an
-        exception will be thrown. Encoding statistics will not be reset when this function is called. It is up-to the caller
-        to ensure that statistics are initialized properly if required.
+        Find the index of the symbol in the current table. Return -1 if not found
 
-        :param dataToEncode_: The data that needs to be compressed (integer array)
-        :param dataLen_: The length of data that needs to be compressed
+        :param symbol_: The symbol for which we are finding the index for
+        :return: Return the index if the symbol is found otherwise -1
+        """
+
+        for i in range(0, len(self.mSymbolCount)):
+            if(self.mSymbolCount[i][0] == symbol_):
+                return i
+
+        return -1
+
+    def encode(self, symbolToEncode_, encodedData_, curEncodedDataByteIndex_, curEncodedDataBitIndex_, maxEncodedDataLen_):
+        """
+        Encode the data passed in.
+
+        :param symbolToEncode_: Symbol to encode
         :param encodedData_: The compressed data should be stored in this byte array
+        :param curEncodedDataByteIndex_ : The current byte index of encoded data
+        :param curEncodedDataBitIndex_ : The current bit index of encoded data
         :param maxEncodedDataLen_ : The max length of compressed data that can be stored in encodedData_
-        :param lastDataBlock: Is this the last data block being encoded. If not we need to take special care to terminate
-                              properly so that decoder can work properly
-        :return: The number of bytes stored in encodedData_
+        :return: True if symbol is already present in table, otherwise False
         """
-
-        # If the byte array is smaller than data length pass in throw exception
-        if(len(dataToEncode_) < dataLen_):
-            raise Exception("Data byte array passed in smaller than expected")
-
-        # If the byte array is smaller than data length pass in throw exception
-        if(len(encodedData_) < maxEncodedDataLen_):
-            raise Exception("Encoded data byte array passed in smaller than expected")
 
         self.mEncodedData = encodedData_
-        self.mEncodedDataCount = 0
-        self.mCurrentBitCount = 0
+        self.mEncodedDataCount = curEncodedDataByteIndex_
+        self.mCurrentBitCount = curEncodedDataBitIndex_
         self.mMaxEncodedDataLen = maxEncodedDataLen_
 
-        # Go through and compress data one byte at a time
-        for i in range(0, dataLen_):
-            [self.mLowerTag, self.mUpperTag] = self._update_range_tags(dataToEncode_[i], self.mLowerTag, self.mUpperTag)
-            self._increment_count(dataToEncode_[i])
+        symbolIndex = self.findSymbolIndex(symbolToEncode_)
+        symbolFound = False
+
+        #If this symbol exists in the table update it's count and encode, otherwise encode the escape symbol
+        if(symbolIndex == -1):
+            [self.mLowerTag, self.mUpperTag] = self._update_range_tags(len(self.mSymbolCount)-1, self.mLowerTag, self.mUpperTag)
             [self.mLowerTag, self.mUpperTag] = self._rescale(self.mLowerTag, self.mUpperTag)
 
-        lowerTagToSend = self.mLowerTag
+            self.mSymbolCount.insert(len(self.mSymbolCount)-2, [symbolToEncode_, 1])
+            self._increment_count(len(self.mSymbolCount)-1)
+        else:
+            symbolFound = True
+            [self.mLowerTag, self.mUpperTag] = self._update_range_tags(symbolIndex, self.mLowerTag, self.mUpperTag)
+            self._increment_count(symbolIndex)
+            [self.mLowerTag, self.mUpperTag] = self._rescale(self.mLowerTag, self.mUpperTag)
 
-        # If not last data block insert extra symbol so that we can properly carry over on decoder. The decoder must be able to fully process the last symbol in order to work properly.
-        # As data is transferred in bytes (not bits) there remains the possibility of extra 0 bits after data has ended which will confuse the decoder. If the last symbol encoded is a don't care then the decoder will properly pick up the actual last symbol.
-        # The last symbol can't be reflected in the statistics as it will be thrown away on the decoder side
-        if(lastDataBlock == False):
-            [lower, upper] = self._update_range_tags(0, self.mLowerTag, self.mUpperTag)
-            [lower, upper] = self._rescale(lower, upper)
-            lowerTagToSend = lower
-
-        # Store the current state of the lower tag to mark the completion of the compression
-        for i in range(0, self.mWordSize):
-            bitValue = (lowerTagToSend >> ((self.mWordSize - 1) - i)) & 0x0001
-
-            self._append_bit(bitValue)
-
-            # Ensure we account for any E3 scaling
-            while(self.mE3ScaleCount > 0):
-                self._append_bit((~bitValue) & 0x0001)
-                self.mE3ScaleCount -= 1
-
-        # Ensure that the current byte is added to the compressed data length if there are any outstanding bits on it
-        if(self.mCurrentBitCount != 0):
-            self.mEncodedDataCount += 1
-
-        return self.mEncodedDataCount
+        return [symbolFound, self.mEncodedDataCount, self.mCurrentBitCount]

@@ -1,15 +1,17 @@
 __author__ = 'Marko Milutinovic'
 
 """
-This class will implement an Arithmetic Coding encoder
+This class will implement a context encoder using Arithmetic Coding
 """
 
 import array
 import utils
 import math
 
-class AREncoder:
-    def __init__(self, wordSize_, vocabularySize_):
+class ContextEncoder:
+    ESCAPE_SYMBOL = -1
+
+    def __init__(self, wordSize_):
         """
         Initialize the object. The word size must be greater than 2 and less than or equal to 16
 
@@ -18,7 +20,6 @@ class AREncoder:
         :return:
         """
         self.mMaxEncodeBytes = utils.calculateMaxBytes(wordSize_)                                 # The max number of bytes we can compress before the statistics need to be re-normalized
-        self.mVocabularySize = vocabularySize_
 
         if(self.mMaxEncodeBytes == 0):
             raise Exception("Invalid word size specified")
@@ -31,9 +32,6 @@ class AREncoder:
         # Create bit mask for the word size
         for i in range(0, self.mWordSize):
             self.mWordBitMask = (self.mWordBitMask << 1) | 0x0001
-
-        # We are initializing with an assumption of a value of 1 for the count of each symbol.
-        self.mSymbolCount = array.array('i', [1]*self.mVocabularySize)
 
         # Reset all the member variables on which encoding is based on
         self.reset()
@@ -48,13 +46,21 @@ class AREncoder:
         self.mEncodedData = None
         self.mMaxEncodedDataLen = 0                                                # The max number of bytes that can be stored in mEncodedData
         self.mEncodedDataCount = int(0)                                            # The number of bytes compressed data is taking up
-        self.mTotalSymbolCount = self.mVocabularySize                              # The total number of symbols encountered
         self.mE3ScaleCount = 0                                                     # Holds the number of E3 mappings currently outstanding
         self.mCurrentBitCount = 0                                                  # The current number of bits loaded onto the mCurrentByte variable
 
-        # We are initializing with an assumption of a value of 1 for the count of each symbol
-        for i in range(0,self.mVocabularySize):
-            self.mSymbolCount[i] = 1
+        self.mZeroOrderSymbols = []
+        self.mZeroOrderSymbols.append([self.ESCAPE_SYMBOL, 1])
+        self.mZeroOrderSymbolCount = 1
+
+        self.mFirstOrderSymbols = []
+        self.mFirstOrderSymbolCounts = []
+
+        self.mBaseSymbols = []
+        # Base symbols are equaly proportional
+        for i in range(0,256):
+            self.mBaseSymbols.append([i, 1])
+        self.mBaseSymbolsCount = len(self.mBaseSymbols)
 
         # Initialize the range tags to min and max
         self.mLowerTag = 0
@@ -86,21 +92,43 @@ class AREncoder:
             self.mCurrentBitCount = 0
             self.mEncodedData[self.mEncodedDataCount] = int(0)
 
-    def _increment_count(self, indexToIncrement_):
+    def _increment_count(self, indexToIncrement_, symbolTable_, totalSymbolCount_):
         """
         Update the count for the provided index. Update
         the total symbol count as well. If we exceed the max symbol count normalize the stats
 
         :param indexToIncrement_: The index which we are updating
-        :return: None
+        :param symbolTable_: The symbol table we are updating
+        :param totalSymbolCount : The total number of symbols in the table
+        :return: The new total symbol count for table
         """
 
-        self.mSymbolCount[indexToIncrement_] += 1
-        self.mTotalSymbolCount += 1
+        symbolTable_[indexToIncrement_][1] += 1
+        totalSymbolCount_ += 1
 
         # If we have reached the max number of bytes, we need to normalize the stats to allow us to continue
-        if(self.mTotalSymbolCount >= self.mMaxEncodeBytes):
-            self._normalize_stats()
+        if(totalSymbolCount_ >= self.mMaxEncodeBytes):
+            totalSymbolCount_ = self._normalize_stats(symbolTable_)
+
+        return totalSymbolCount_
+
+    def _decrement_count(self, indexToDecrement_, symbolTable_, totalSymbolCount_):
+        """
+
+        :param indexToDecrement_: The index which we are updating
+        :param symbolTable_: The symbol table we are updating
+        :param totalSymbolCount : The total number of symbols in the table
+        :return: The new total symbol count for table
+        """
+
+        symbolTable_[indexToDecrement_][1] -= 1
+        totalSymbolCount_ -= 1
+
+        #If we hit zero count remove the symbol from table
+        if(symbolTable_[indexToDecrement_][1] == 0):
+            symbolTable_.pop(indexToDecrement_)
+
+        return totalSymbolCount_
 
     def _rescale(self, lowerTag_, upperTag_):
         """
@@ -148,7 +176,7 @@ class AREncoder:
 
         return [lowerTag_, upperTag_]
 
-    def _update_range_tags(self, currentSymbol_, lowerTag_, upperTag_):
+    def _update_range_tags(self, currentSymbolIndex_, symbolTable_, symbolTableCount_, lowerTag_, upperTag_):
         """
         Update the upper and lower tags according to stats for the incoming symbol
 
@@ -162,39 +190,100 @@ class AREncoder:
         rangeDiff = upperTag_ - lowerTag_
         cumulativeCountSymbol = 0
 
-        for i in range(0, currentSymbol_ + 1):
-            cumulativeCountSymbol += self.mSymbolCount[i]
+        for i in range(0, currentSymbolIndex_ + 1):
+            cumulativeCountSymbol += symbolTable_[i][1]
 
-        cumulativeCountPrevSymbol = cumulativeCountSymbol - self.mSymbolCount[currentSymbol_]
+        cumulativeCountPrevSymbol = cumulativeCountSymbol - symbolTable_[currentSymbolIndex_][1]
 
-        upperTag_ = int((lowerTag_ + math.floor(((rangeDiff + 1)*cumulativeCountSymbol))/self.mTotalSymbolCount - 1))
-        lowerTag_ = int((lowerTag_ + math.floor(((rangeDiff + 1)*cumulativeCountPrevSymbol))/self.mTotalSymbolCount))
+        upperTag_ = int((lowerTag_ + math.floor(((rangeDiff + 1)*cumulativeCountSymbol))/symbolTableCount_ - 1))
+        lowerTag_ = int((lowerTag_ + math.floor(((rangeDiff + 1)*cumulativeCountPrevSymbol))/symbolTableCount_))
 
         return [lowerTag_, upperTag_]
 
-    def _normalize_stats(self):
+    def _normalize_stats(self, symbolTable_):
         """
         Divide the total count for each symbol by 2 but ensure each symbol count is at least 1.
         Get new total symbol count from the entries
 
-        :return: None
+        :param: symbolTable_: Current table we are normalizing
+        :return: The new symbol count for table
         """
 
-        self.mTotalSymbolCount = 0
+        symbolCount = 0
 
         # Go through all the entries in the cumulative count array
-        for i in range(0, self.mVocabularySize):
+        for i in range(0, len(symbolTable_)):
 
-            value = int(self.mSymbolCount[i]/2)
+            value = int(symbolTable_[i][1]/2)
 
             # Ensure the count is at least 1
             if(value == 0):
                 value = 1
 
-            self.mSymbolCount[i] = value
-            self.mTotalSymbolCount += value
+            symbolTable_[i][1] = value
+            symbolCount += value
 
-        def encode(self, dataToEncode_, dataLen_, encodedData_, maxEncodedDataLen_, lastDataBlock=True):
+        return symbolCount
+
+    def findSymbolIndex(self, symbol_, symbolTable_):
+        """
+        Find the index of the symbol in the current table. Return -1 if not found
+
+        :param symbol_: The symbol for which we are finding the index for
+        :param: symbolTable_: The symbol table we are searching
+        :return: Return the index if the symbol is found otherwise -1
+        """
+
+        for i in range(0, len(symbolTable_)):
+            if(symbolTable_[i][0] == symbol_):
+                return i
+
+        return -1
+
+    def zeroOrderEncode(self, symbolToEncode_):
+        symbolIndex = self.findSymbolIndex(symbolToEncode_, self.mZeroOrderSymbols)
+        symbolFound = False
+
+        # If this symbol exists in the table update it's count and encode, otherwise encode the escape symbol and use the base symbol encoding
+        if (symbolIndex == -1):
+            [self.mLowerTag, self.mUpperTag] = self._update_range_tags(len(self.mZeroOrderSymbols) - 1,
+                                                                       self.mZeroOrderSymbols,
+                                                                       self.mZeroOrderSymbolCount, self.mLowerTag,
+                                                                       self.mUpperTag)
+            [self.mLowerTag, self.mUpperTag] = self._rescale(self.mLowerTag, self.mUpperTag)
+
+            self.mZeroOrderSymbols.insert(len(self.mZeroOrderSymbols) - 1, [symbolToEncode_, 0])
+            self.mZeroOrderSymbolCount = self._increment_count(len(self.mZeroOrderSymbols) - 2, self.mZeroOrderSymbols,
+                                                               self.mZeroOrderSymbolCount)
+            self.mZeroOrderSymbolCount = self._increment_count(len(self.mZeroOrderSymbols) - 1, self.mZeroOrderSymbols,
+                                                               self.mZeroOrderSymbolCount)
+
+            # Send base symbol encoding
+            symbolIndexBase = self.findSymbolIndex(symbolToEncode_, self.mBaseSymbols)
+
+            if (symbolIndexBase == -1):
+                raise Exception("Not in base symbols")
+
+            [self.mLowerTag, self.mUpperTag] = self._update_range_tags(symbolIndexBase, self.mBaseSymbols,
+                                                                       self.mBaseSymbolsCount, self.mLowerTag,
+                                                                       self.mUpperTag)
+            [self.mLowerTag, self.mUpperTag] = self._rescale(self.mLowerTag, self.mUpperTag)
+            self.mBaseSymbolsCount = self._decrement_count(symbolIndexBase, self.mBaseSymbols, self.mBaseSymbolsCount)
+
+        else:
+            symbolFound = True
+            [self.mLowerTag, self.mUpperTag] = self._update_range_tags(symbolIndex, self.mZeroOrderSymbols,
+                                                                       self.mZeroOrderSymbolCount, self.mLowerTag,
+                                                                       self.mUpperTag)
+            self.mZeroOrderSymbolCount = self._increment_count(symbolIndex, self.mZeroOrderSymbols,
+                                                               self.mZeroOrderSymbolCount)
+            [self.mLowerTag, self.mUpperTag] = self._rescale(self.mLowerTag, self.mUpperTag)
+
+    def addSymbolTable(self, contextTable_, contextTableCounts_, contextSymbol_):
+        contextTable_.insert(len(contextTable_) - 1, [contextSymbol_, [[-1, 0]]])
+        contextTableCounts_.insert(len(contextTable_) -1, 1)
+
+    def encode(self, dataToEncode_, dataLen_, encodedData_, maxEncodedDataLen_, lastDataBlock=True):
         """
         Encode the data passed in. The encoded data will be stored in encodedData_ and if there is not enough room an
         exception will be thrown. Encoding statistics will not be reset when this function is called. It is up-to the caller
@@ -205,7 +294,7 @@ class AREncoder:
         :param encodedData_: The compressed data should be stored in this byte array
         :param maxEncodedDataLen_ : The max length of compressed data that can be stored in encodedData_
         :param lastDataBlock: Is this the last data block being encoded. If not we need to take special care to terminate
-                              properly so that decoder can work properly
+               properly so that decoder can work properly
         :return: The number of bytes stored in encodedData_
         """
 
@@ -222,11 +311,46 @@ class AREncoder:
         self.mCurrentBitCount = 0
         self.mMaxEncodedDataLen = maxEncodedDataLen_
 
+        currentContext = None
+
         # Go through and compress data one byte at a time
         for i in range(0, dataLen_):
-            [self.mLowerTag, self.mUpperTag] = self._update_range_tags(dataToEncode_[i], self.mLowerTag, self.mUpperTag)
-            self._increment_count(dataToEncode_[i])
-            [self.mLowerTag, self.mUpperTag] = self._rescale(self.mLowerTag, self.mUpperTag)
+            symbolIndex = -1
+
+            # If we don't have a context don't bother doing first order
+            if(currentContext == None):
+                self.zeroOrderEncode(dataToEncode_[i])
+                currentContext = dataToEncode_[i]
+                self.addSymbolTable(self.mFirstOrderSymbols, self.mFirstOrderSymbolCounts, currentContext)
+            else:
+                symbolTableIndex = self.findSymbolIndex(currentContext, self.mFirstOrderSymbols)
+
+                if(symbolTableIndex == -1):
+                    raise Exception("Not in first order")
+
+                symbolTable = self.mFirstOrderSymbols[symbolTableIndex][1]
+                symbolIndex = self.findSymbolIndex(dataToEncode_[i], symbolTable)
+
+                #If the symbol is not in the table send escape symbol and use lower order to encode symbol
+                if(symbolIndex == -1):
+                    self.zeroOrderEncode(dataToEncode_[i])
+
+                    symbolTable.insert(len(symbolTable) - 1, [dataToEncode_[i], 0])
+                    self.mFirstOrderSymbolCounts[symbolTableIndex] = \
+                        self._increment_count(len(symbolTable) - 2, symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex])
+                    self.mFirstOrderSymbolCounts[symbolTableIndex] = \
+                        self._increment_count(len(symbolTable) - 1, symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex])
+                else:
+                    [self.mLowerTag, self.mUpperTag] = self._update_range_tags(symbolIndex, symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex], self.mLowerTag, self.mUpperTag)
+                    self.mFirstOrderSymbolCounts[symbolTableIndex] = self._increment_count(symbolIndex, symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex])
+                    [self.mLowerTag, self.mUpperTag] = self._rescale(self.mLowerTag, self.mUpperTag)
+
+                currentContext = dataToEncode_[i]
+                symbolTableIndex = self.findSymbolIndex(currentContext, self.mFirstOrderSymbols)
+
+                #If not in symbol table add it
+                if(symbolTableIndex == -1):
+                    self.addSymbolTable(self.mFirstOrderSymbols, self.mFirstOrderSymbolCounts, currentContext)
 
         lowerTagToSend = self.mLowerTag
 
@@ -234,7 +358,7 @@ class AREncoder:
         # As data is transferred in bytes (not bits) there remains the possibility of extra 0 bits after data has ended which will confuse the decoder. If the last symbol encoded is a don't care then the decoder will properly pick up the actual last symbol.
         # The last symbol can't be reflected in the statistics as it will be thrown away on the decoder side
         if(lastDataBlock == False):
-            [lower, upper] = self._update_range_tags(0, self.mLowerTag, self.mUpperTag)
+            [lower, upper] = self._update_range_tags(0, self.mZeroOrderSymbols, self.mZeroOrderSymbolCount, self.mLowerTag, self.mUpperTag)
             [lower, upper] = self._rescale(lower, upper)
             lowerTagToSend = lower
 
