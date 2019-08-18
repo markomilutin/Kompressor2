@@ -52,6 +52,8 @@ class ContextEncoder:
         self.mZeroOrderSymbols = []
         self.mZeroOrderSymbols.append([self.ESCAPE_SYMBOL, 1])
         self.mZeroOrderSymbolCount = 1
+        self.mZeroOrderSymbolsBackup = []
+        self.mZeroOrderSymbolCountBackup = 0
 
         self.mFirstOrderSymbols = []
         self.mFirstOrderSymbolCounts = []
@@ -240,17 +242,19 @@ class ContextEncoder:
 
         return -1
 
-    def zeroOrderEncode(self, symbolToEncode_):
+    def zeroOrderEncode(self, symbolToEncode_, firstOrderTable_):
         symbolIndex = self.findSymbolIndex(symbolToEncode_, self.mZeroOrderSymbols)
         symbolFound = False
 
         # If this symbol exists in the table update it's count and encode, otherwise encode the escape symbol and use the base symbol encoding
         if (symbolIndex == -1):
+            self.modifyZeroOrder(firstOrderTable_)
             [self.mLowerTag, self.mUpperTag] = self._update_range_tags(len(self.mZeroOrderSymbols) - 1,
                                                                        self.mZeroOrderSymbols,
                                                                        self.mZeroOrderSymbolCount, self.mLowerTag,
                                                                        self.mUpperTag)
             [self.mLowerTag, self.mUpperTag] = self._rescale(self.mLowerTag, self.mUpperTag)
+            self.restoreZeroOrder()
 
             self.mZeroOrderSymbols.insert(len(self.mZeroOrderSymbols) - 1, [symbolToEncode_, 0])
             self.mZeroOrderSymbolCount = self._increment_count(len(self.mZeroOrderSymbols) - 2, self.mZeroOrderSymbols,
@@ -272,9 +276,12 @@ class ContextEncoder:
 
         else:
             symbolFound = True
+            self.modifyZeroOrder(firstOrderTable_)
             [self.mLowerTag, self.mUpperTag] = self._update_range_tags(symbolIndex, self.mZeroOrderSymbols,
                                                                        self.mZeroOrderSymbolCount, self.mLowerTag,
                                                                        self.mUpperTag)
+            self.restoreZeroOrder()
+
             self.mZeroOrderSymbolCount = self._increment_count(symbolIndex, self.mZeroOrderSymbols,
                                                                self.mZeroOrderSymbolCount)
             [self.mLowerTag, self.mUpperTag] = self._rescale(self.mLowerTag, self.mUpperTag)
@@ -282,6 +289,26 @@ class ContextEncoder:
     def addSymbolTable(self, contextTable_, contextTableCounts_, contextSymbol_):
         contextTable_.insert(len(contextTable_) - 1, [contextSymbol_, [[-1, 1]]])
         contextTableCounts_.insert(len(contextTable_) -2, 1)
+
+    def modifyZeroOrder(self, symbolTable_):
+
+        self.mZeroOrderSymbolsBackup = self.mZeroOrderSymbols
+        self.mZeroOrderSymbolCountBackup = self.mZeroOrderSymbolCount
+
+        self.mZeroOrderSymbols = self.mZeroOrderSymbols.copy()
+
+        for symbols in symbolTable_:
+            if symbols[0] != -1:
+                symbolIndex = self.findSymbolIndex(symbols[0], self.mZeroOrderSymbols)
+
+                if(symbolIndex != -1):
+                    self.mZeroOrderSymbolCount -= self.mZeroOrderSymbols[symbolIndex][1]
+                    self.mZeroOrderSymbols.pop(symbolIndex)
+
+    def restoreZeroOrder(self):
+        self.mZeroOrderSymbols = self.mZeroOrderSymbolsBackup
+        self.mZeroOrderSymbolCount = self.mZeroOrderSymbolCountBackup
+
 
     def encode(self, dataToEncode_, dataLen_, encodedData_, maxEncodedDataLen_, lastDataBlock=True):
         """
@@ -319,7 +346,7 @@ class ContextEncoder:
 
             # If we don't have a context don't bother doing first order
             if(currentContext == None):
-                self.zeroOrderEncode(dataToEncode_[i])
+                self.zeroOrderEncode(dataToEncode_[i], [])
                 currentContext = dataToEncode_[i]
                 self.addSymbolTable(self.mFirstOrderSymbols, self.mFirstOrderSymbolCounts, currentContext)
             else:
@@ -340,17 +367,22 @@ class ContextEncoder:
                                                                                self.mUpperTag)
                     [self.mLowerTag, self.mUpperTag] = self._rescale(self.mLowerTag, self.mUpperTag)
 
+                    self.zeroOrderEncode(dataToEncode_[i], symbolTable)
+
                     symbolTable.insert(len(symbolTable) - 1, [dataToEncode_[i], 0])
                     self.mFirstOrderSymbolCounts[symbolTableIndex] = \
                         self._increment_count(len(symbolTable) - 2, symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex])
                     self.mFirstOrderSymbolCounts[symbolTableIndex] = \
                         self._increment_count(len(symbolTable) - 1, symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex])
 
-                    self.zeroOrderEncode(dataToEncode_[i])
+
                 else:
                     [self.mLowerTag, self.mUpperTag] = self._update_range_tags(symbolIndex, symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex], self.mLowerTag, self.mUpperTag)
                     self.mFirstOrderSymbolCounts[symbolTableIndex] = self._increment_count(symbolIndex, symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex])
                     [self.mLowerTag, self.mUpperTag] = self._rescale(self.mLowerTag, self.mUpperTag)
+
+                    symbolIndex = self.findSymbolIndex(dataToEncode_[i], self.mZeroOrderSymbols)
+                    self.mZeroOrderSymbolCount = self._increment_count(symbolIndex, self.mZeroOrderSymbols, self.mZeroOrderSymbolCount)
 
                 currentContext = dataToEncode_[i]
                 symbolTableIndex = self.findSymbolIndex(currentContext, self.mFirstOrderSymbols)

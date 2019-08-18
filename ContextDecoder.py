@@ -280,6 +280,25 @@ class ContextDecoder:
                                                                    self.mZeroOrderSymbolCount)
         return [currentSymbol, finished]
 
+    def modifyZeroOrder(self, symbolTable_):
+
+        self.mZeroOrderSymbolsBackup = self.mZeroOrderSymbols
+        self.mZeroOrderSymbolCountBackup = self.mZeroOrderSymbolCount
+
+        self.mZeroOrderSymbols = self.mZeroOrderSymbols.copy()
+
+        for symbols in symbolTable_:
+            if symbols[0] != -1:
+                symbolIndex = self.findSymbolIndex(symbols[0], self.mZeroOrderSymbols)
+
+                if(symbolIndex != -1):
+                    self.mZeroOrderSymbolCount -= self.mZeroOrderSymbols[symbolIndex][1]
+                    self.mZeroOrderSymbols.pop(symbolIndex)
+
+    def restoreZeroOrder(self):
+        self.mZeroOrderSymbols = self.mZeroOrderSymbolsBackup
+        self.mZeroOrderSymbolCount = self.mZeroOrderSymbolCountBackup
+
     def decode(self, encodedData_, encodedDataLen_, decodedData_, maxDecodedDataLen_):
         """
         Decompress the data passed in. It is the responsibility of the caller to reset the decoder if required before
@@ -340,6 +359,9 @@ class ContextDecoder:
                     symbolTable.insert(len(symbolTable) - 1, [currentSymbol, 0])
                     self.mFirstOrderSymbolCounts[symbolTableIndex] = \
                         self._increment_count(len(symbolTable) - 2, symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex])
+                else:
+                    symbolIndex = self.findSymbolIndex(currentSymbol, self.mZeroOrderSymbols)
+                    self.mZeroOrderSymbolCount = self._increment_count(symbolIndex, self.mZeroOrderSymbols, self.mZeroOrderSymbolCount)
 
                 currentContext = currentSymbol
                 symbolTableIndex = self.findSymbolIndex(currentContext, self.mFirstOrderSymbols)
