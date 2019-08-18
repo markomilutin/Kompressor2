@@ -244,8 +244,8 @@ class ContextDecoder:
         return [currentSymbol, finished, symbolTableCount_]
 
     def addSymbolTable(self, contextTable_, contextTableCounts_, contextSymbol_):
-        contextTable_.insert(len(contextTable_) - 1, [contextSymbol_, [[-1, 0]]])
-        contextTableCounts_.insert(len(contextTable_) -1, 1)
+        contextTable_.insert(len(contextTable_) - 1, [contextSymbol_, [[-1, 1]]])
+        contextTableCounts_.insert(len(contextTable_) -2, 1)
 
     def findSymbolIndex(self, symbol_, symbolTable_):
         """
@@ -331,11 +331,7 @@ class ContextDecoder:
 
                 symbolTable = self.mFirstOrderSymbols[symbolTableIndex][1]
 
-                if(self.mFirstOrderSymbolCounts[symbolTableIndex] == 1):
-                    currentSymbol = -1
-                    finished = False
-                else:
-                    [currentSymbol, finished, self.mFirstOrderSymbolCounts[symbolTableIndex]] = self.decodeFromTable(symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex], 1)
+                [currentSymbol, finished, self.mFirstOrderSymbolCounts[symbolTableIndex]] = self.decodeFromTable(symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex], 1)
 
                 #If the symbol is not in the table send escape symbol and use lower order to encode symbol
                 if(currentSymbol == -1):
@@ -344,13 +340,6 @@ class ContextDecoder:
                     symbolTable.insert(len(symbolTable) - 1, [currentSymbol, 0])
                     self.mFirstOrderSymbolCounts[symbolTableIndex] = \
                         self._increment_count(len(symbolTable) - 2, symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex])
-                    self.mFirstOrderSymbolCounts[symbolTableIndex] = \
-                        self._increment_count(len(symbolTable) - 1, symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex])
-                else:
-                    symbolIndex = self.findSymbolIndex(currentSymbol, symbolTable)
-                    [self.mLowerTag, self.mUpperTag] = self._update_range_tags(symbolIndex, symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex], self.mLowerTag, self.mUpperTag)
-                    self.mFirstOrderSymbolCounts[symbolTableIndex] = self._increment_count(symbolIndex, symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex])
-                    [self.mLowerTag, self.mUpperTag] = self._rescale(self.mLowerTag, self.mUpperTag)
 
                 currentContext = currentSymbol
                 symbolTableIndex = self.findSymbolIndex(currentContext, self.mFirstOrderSymbols)
