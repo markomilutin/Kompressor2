@@ -1,8 +1,8 @@
 __author__ = 'marko'
 
 import sys
-from Kompressor import Kompressor
-from Dekompressor import Dekompressor
+from Kompressor2 import Kompressor2
+from Dekompressor2 import Dekompressor2
 import cProfile
 import os
 import array
@@ -29,8 +29,8 @@ def main():
     inputData = array.array('i', [0]*2048)
     inputDataSize = 0
 
-    kompressor = Kompressor(2048*numLinesAtOnce, 10, 13)
-    dekompressor = Dekompressor(2048*numLinesAtOnce, 10, 13)
+    kompressor = Kompressor2(2048*numLinesAtOnce, 10, 13)
+    dekompressor = Dekompressor2(2048*numLinesAtOnce, 10, 13)
 
     # Hold all the compressed data in lines
     compressedFileData = []
@@ -63,6 +63,7 @@ def main():
             lineCount += 1
 
             if(lineCount >= numLinesAtOnce):
+                kompressor.reset()
                 compressedData = bytearray(2048*numLinesAtOnce)
                 compressedLineLen = kompressor.kompress(dataToCompress, dataToCompressSize, compressedData, 2048*numLinesAtOnce,lastDataBlock=False)
 
@@ -76,6 +77,7 @@ def main():
 
                 dataToCompress = []
                 lineCount = 0
+                break
 
     profile.disable()
 
@@ -90,6 +92,7 @@ def main():
 
     # Dekompress the data stored in memory
     for i in range(0,len(compressedFileData)):
+        dekompressor.reset()
         decompressedData = bytearray(2048*numLinesAtOnce)
         [compressedLineLen, inputDataSize, compressedLineData]  = compressedFileData[i]
 

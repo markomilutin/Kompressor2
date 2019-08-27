@@ -17,7 +17,7 @@ def getMinBytesToRepresent(maxValue_):
     if(maxValue_ == 1):
         return 1
 
-    return math.ceil(math.ceil(math.log2(maxValue_)/8))
+    return int(math.ceil(math.ceil(math.log(maxValue_,2)/8)))
 
 def calculateMaxBytes(wordSize_):
     """
@@ -29,7 +29,7 @@ def calculateMaxBytes(wordSize_):
     """
 
     # If an invalid value is passed in return 0
-    if((wordSize_ <= 2) or (wordSize_ > 16)):
+    if((wordSize_ <= 2) or (wordSize_ > 32)):
         return 0
 
     maxBytes = math.pow(2, (wordSize_ - 2))

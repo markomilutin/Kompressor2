@@ -11,9 +11,10 @@ import math
 
 class ContextDecoder:
     ESCAPE_SYMBOL = -1
+    TERMINATION_SYMBOL = -2
     BITS_IN_BYTE = 8
 
-    def __init__(self, wordSize_, terminationSymbol_):
+    def __init__(self, wordSize_):
         """
         Initialize the object
 
@@ -22,8 +23,7 @@ class ContextDecoder:
         :return: None
         """
 
-        self.mMaxDecodingBytes = utils.calculateMaxBytes(wordSize_)                          # The max number of bytes we can decode before the statistics need to be re-normalized
-        self.mTerminationSymbol = terminationSymbol_
+        self.mMaxDecodingBytes = utils.calculateMaxBytes(wordSize_)                          # The max number of bytes we can decode before the statistics need to be re-normalized_
 
         if(self.mMaxDecodingBytes == 0):
             raise Exception("Invalid word size specified")
@@ -68,7 +68,8 @@ class ContextDecoder:
         # Base symbols are equaly proportional
         for i in range(0,256):
             self.mBaseSymbols.append([i, 1])
-        self.mBaseSymbolsCount = 256
+        self.mBaseSymbols.append([self.TERMINATION_SYMBOL, 1])
+        self.mBaseSymbolsCount = 257
 
     def _get_next_bit(self):
         """
@@ -149,7 +150,7 @@ class ContextDecoder:
             valueMSB = ((self.mLowerTag & self.mWordMSBMask) >> (self.mWordSize -1)) & 0x0001
             tagRangeInMiddle = (((self.mUpperTag & self.mWordSecondMSBMask) == 0) and ((self.mLowerTag & self.mWordSecondMSBMask) == self.mWordSecondMSBMask))
 
-    def _update_range_tags(self, currentSymbolIndex_, cumulativeCountSymbol_, symbolTable_, symbolTableCount_, actionOnSymbol_):
+    def _update_range_tags(self, currentSymbolIndex_, cumulativeCountSymbol_, symbolTable_, symbolTableCount_):
         """
         Update the upper and lower tags according to stats for the incoming symbol
 
@@ -165,13 +166,6 @@ class ContextDecoder:
 
         self.mLowerTag = int((prevLowerTag + math.floor(((rangeDiff + 1)*cumulativeCountPrevSymbol))/symbolTableCount_))
         self.mUpperTag = int((prevLowerTag + math.floor(((rangeDiff + 1)*cumulativeCountSymbol_))/symbolTableCount_ - 1))
-
-        if(actionOnSymbol_ == 0):
-            return symbolTableCount_
-        elif(actionOnSymbol_ == -1):
-            return self._decrement_count(currentSymbolIndex_, symbolTable_, symbolTableCount_)
-        else:
-            return self._increment_count(currentSymbolIndex_, symbolTable_, symbolTableCount_)
 
     def _decrement_count(self, indexToDecrement_, symbolTable_, totalSymbolCount_):
         """
@@ -216,14 +210,16 @@ class ContextDecoder:
 
         return symbolCount
 
-    def decodeFromTable(self, symbolTable_, symbolTableCount_, actionOnSymbol_):
+    def decodeFromTable(self, symbolTable_, symbolTableCount_, higherOrderTable_, actionOnSymbol_):
+        finished = False
+
+        [symbolTable_, symbolTableCount_] = self.modifyZeroOrder(symbolTable_, symbolTableCount_, higherOrderTable_)
+        symbolCumulativeCount = symbolTable_[0][1]
+
         currentSymbolIndex = 0
         currentCumulativeCount = int(math.floor(
             ((self.mCurrentTag - self.mLowerTag + 1) * symbolTableCount_ - 1) / (
             self.mUpperTag - self.mLowerTag + 1)))
-
-        finished = False
-        symbolCumulativeCount = symbolTable_[0][1]
 
         while (currentCumulativeCount >= symbolCumulativeCount):
             currentSymbolIndex += 1
@@ -234,12 +230,21 @@ class ContextDecoder:
             symbolCumulativeCount += symbolTable_[currentSymbolIndex][1]
 
         currentSymbol = symbolTable_[currentSymbolIndex][0]
-        # If we have reached the termination symbol then decoding is finished, otherwise store the decompressed symbol
-        if (currentSymbol == self.mTerminationSymbol):
-            finished = True
-
-        symbolTableCount_ = self._update_range_tags(currentSymbolIndex, symbolCumulativeCount, symbolTable_, symbolTableCount_, actionOnSymbol_)
+        self._update_range_tags(currentSymbolIndex, symbolCumulativeCount, symbolTable_, symbolTableCount_)
         self._rescale()
+
+        [symbolTable_, symbolTableCount_] = self.restoreZeroOrder()
+
+        currentSymbolIndex = self.findSymbolIndex(currentSymbol, symbolTable_)
+
+        if(actionOnSymbol_ == -1):
+            symbolTableCount_ = self._decrement_count(currentSymbolIndex, symbolTable_, symbolTableCount_)
+        elif(actionOnSymbol_ == 1):
+            symbolTableCount_ = self._increment_count(currentSymbolIndex, symbolTable_, symbolTableCount_)
+
+        # If we have reached the termination symbol then decoding is finished, otherwise store the decompressed symbol
+        if (currentSymbol == self.TERMINATION_SYMBOL):
+            finished = True
 
         return [currentSymbol, finished, symbolTableCount_]
 
@@ -262,42 +267,47 @@ class ContextDecoder:
 
         return -1
 
-    def zeroOrderDecode(self):
+    def zeroOrderDecode(self, firstOrderTable_):
         finished = False
 
         # Attempt to decode from zero order table first
         [currentSymbol, finished, self.mZeroOrderSymbolCount] = self.decodeFromTable(self.mZeroOrderSymbols,
-                                                                                     self.mZeroOrderSymbolCount, 1)
+                                                                                     self.mZeroOrderSymbolCount,
+                                                                                     firstOrderTable_,
+                                                                                     1)
 
         # If we have reached the termination symbol then decoding is finished, otherwise store the decompressed symbol
         if (not finished):
             if (currentSymbol == self.ESCAPE_SYMBOL):
                 [currentSymbol, finished, self.mBaseSymbolsCount] = self.decodeFromTable(self.mBaseSymbols,
-                                                                                         self.mBaseSymbolsCount, -1)
+                                                                                         self.mBaseSymbolsCount,
+                                                                                         [],
+                                                                                         -1)
                 self.mZeroOrderSymbols.insert(len(self.mZeroOrderSymbols) - 1, [currentSymbol, 0])
                 self.mZeroOrderSymbolCount = self._increment_count(len(self.mZeroOrderSymbols) - 2,
                                                                    self.mZeroOrderSymbols,
                                                                    self.mZeroOrderSymbolCount)
         return [currentSymbol, finished]
 
-    def modifyZeroOrder(self, symbolTable_):
+    def modifyZeroOrder(self, symbolTable_, symbolTableCount_, higherOrderTable_):
 
-        self.mZeroOrderSymbolsBackup = self.mZeroOrderSymbols
-        self.mZeroOrderSymbolCountBackup = self.mZeroOrderSymbolCount
+        self.mSymbolsBackup = symbolTable_
+        self.mSymbolCountBackup = symbolTableCount_
 
-        self.mZeroOrderSymbols = self.mZeroOrderSymbols.copy()
+        symbolTable_ = symbolTable_.copy()
 
-        for symbols in symbolTable_:
+        for symbols in higherOrderTable_:
             if symbols[0] != -1:
-                symbolIndex = self.findSymbolIndex(symbols[0], self.mZeroOrderSymbols)
+                symbolIndex = self.findSymbolIndex(symbols[0], symbolTable_)
 
                 if(symbolIndex != -1):
-                    self.mZeroOrderSymbolCount -= self.mZeroOrderSymbols[symbolIndex][1]
-                    self.mZeroOrderSymbols.pop(symbolIndex)
+                    symbolTableCount_ -= symbolTable_[symbolIndex][1]
+                    symbolTable_.pop(symbolIndex)
+
+        return [symbolTable_, symbolTableCount_]
 
     def restoreZeroOrder(self):
-        self.mZeroOrderSymbols = self.mZeroOrderSymbolsBackup
-        self.mZeroOrderSymbolCount = self.mZeroOrderSymbolCountBackup
+        return [self.mSymbolsBackup, self.mSymbolCountBackup]
 
     def decode(self, encodedData_, encodedDataLen_, decodedData_, maxDecodedDataLen_):
         """
@@ -339,7 +349,7 @@ class ContextDecoder:
         while(not finished):
             # If we don't have a context don't bother doing first order
             if(currentContext == None):
-                [currentSymbol, finished] = self.zeroOrderDecode()
+                [currentSymbol, finished] = self.zeroOrderDecode([])
                 currentContext = currentSymbol
                 self.addSymbolTable(self.mFirstOrderSymbols, self.mFirstOrderSymbolCounts, currentContext)
             else:
@@ -350,11 +360,11 @@ class ContextDecoder:
 
                 symbolTable = self.mFirstOrderSymbols[symbolTableIndex][1]
 
-                [currentSymbol, finished, self.mFirstOrderSymbolCounts[symbolTableIndex]] = self.decodeFromTable(symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex], 1)
+                [currentSymbol, finished, self.mFirstOrderSymbolCounts[symbolTableIndex]] = self.decodeFromTable(symbolTable, self.mFirstOrderSymbolCounts[symbolTableIndex], [], 1)
 
-                #If the symbol is not in the table send escape symbol and use lower order to encode symbol
+                #If the symbol is not in the table send escape symbol and use lsower order to encode symbol
                 if(currentSymbol == -1):
-                    [currentSymbol, finished] = self.zeroOrderDecode()
+                    [currentSymbol, finished] = self.zeroOrderDecode(symbolTable)
 
                     symbolTable.insert(len(symbolTable) - 1, [currentSymbol, 0])
                     self.mFirstOrderSymbolCounts[symbolTableIndex] = \

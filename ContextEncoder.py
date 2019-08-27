@@ -10,6 +10,7 @@ import math
 
 class ContextEncoder:
     ESCAPE_SYMBOL = -1
+    TERMINATION_SYMBOL = -2
 
     def __init__(self, wordSize_):
         """
@@ -62,6 +63,7 @@ class ContextEncoder:
         # Base symbols are equaly proportional
         for i in range(0,256):
             self.mBaseSymbols.append([i, 1])
+        self.mBaseSymbols.append([self.TERMINATION_SYMBOL, 1])
         self.mBaseSymbolsCount = len(self.mBaseSymbols)
 
         # Initialize the range tags to min and max
@@ -251,15 +253,16 @@ class ContextEncoder:
             self.modifyZeroOrder(firstOrderTable_)
             [self.mLowerTag, self.mUpperTag] = self._update_range_tags(len(self.mZeroOrderSymbols) - 1,
                                                                        self.mZeroOrderSymbols,
-                                                                       self.mZeroOrderSymbolCount, self.mLowerTag,
+                                                                       self.mZeroOrderSymbolCount,
+                                                                       self.mLowerTag,
                                                                        self.mUpperTag)
             [self.mLowerTag, self.mUpperTag] = self._rescale(self.mLowerTag, self.mUpperTag)
             self.restoreZeroOrder()
 
+            self.mZeroOrderSymbolCount = self._increment_count(len(self.mZeroOrderSymbols) - 1, self.mZeroOrderSymbols,
+                                                               self.mZeroOrderSymbolCount)
             self.mZeroOrderSymbols.insert(len(self.mZeroOrderSymbols) - 1, [symbolToEncode_, 0])
             self.mZeroOrderSymbolCount = self._increment_count(len(self.mZeroOrderSymbols) - 2, self.mZeroOrderSymbols,
-                                                               self.mZeroOrderSymbolCount)
-            self.mZeroOrderSymbolCount = self._increment_count(len(self.mZeroOrderSymbols) - 1, self.mZeroOrderSymbols,
                                                                self.mZeroOrderSymbolCount)
 
             # Send base symbol encoding
@@ -277,7 +280,8 @@ class ContextEncoder:
         else:
             symbolFound = True
             self.modifyZeroOrder(firstOrderTable_)
-            [self.mLowerTag, self.mUpperTag] = self._update_range_tags(symbolIndex, self.mZeroOrderSymbols,
+            symbolIndexModified = self.findSymbolIndex(symbolToEncode_, self.mZeroOrderSymbols)
+            [self.mLowerTag, self.mUpperTag] = self._update_range_tags(symbolIndexModified, self.mZeroOrderSymbols,
                                                                        self.mZeroOrderSymbolCount, self.mLowerTag,
                                                                        self.mUpperTag)
             self.restoreZeroOrder()
